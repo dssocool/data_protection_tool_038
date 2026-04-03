@@ -1,0 +1,281 @@
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { SavedConnection } from "./ConnectionsPanel";
+import "./FullRunModal.css";
+
+export interface FlowSource {
+  connectionRowKey: string;
+  serverName: string;
+  databaseName: string;
+  schema: string;
+  tableName: string;
+}
+
+export interface FlowDest {
+  connectionRowKey: string;
+  serverName: string;
+  databaseName: string;
+  schema: string;
+  tableName: string;
+}
+
+interface FullRunModalProps {
+  connections: SavedConnection[];
+  sourceConnectionRowKey: string;
+  schema: string;
+  tableName: string;
+  agentPath: string;
+  minimizing?: boolean;
+  onClose: () => void;
+  onSaveAndRun: (source: FlowSource, dest: FlowDest, destConnectionRowKey: string, destSchema: string) => void;
+  onAddToFlow: (source: FlowSource, dest: FlowDest) => void;
+  onMinimizeEnd?: () => void;
+}
+
+export default function FullRunModal({
+  connections,
+  sourceConnectionRowKey,
+  schema,
+  tableName,
+  agentPath,
+  minimizing,
+  onClose,
+  onSaveAndRun,
+  onAddToFlow,
+  onMinimizeEnd,
+}: FullRunModalProps) {
+  const [selectedConnection, setSelectedConnection] = useState(
+    connections.length > 0 ? connections[0].rowKey : ""
+  );
+  const [schemas, setSchemas] = useState<string[]>([]);
+  const [selectedSchema, setSelectedSchema] = useState("");
+  const [loadingSchemas, setLoadingSchemas] = useState(false);
+  const [confirmRunOpen, setConfirmRunOpen] = useState(false);
+
+  const sourceConn = connections.find((c) => c.rowKey === sourceConnectionRowKey);
+
+  useEffect(() => {
+    if (!selectedConnection || !agentPath) return;
+
+    let cancelled = false;
+    setLoadingSchemas(true);
+    setSchemas([]);
+    setSelectedSchema("");
+
+    fetch(`/api/agents/${agentPath}/list-schemas?rowKey=${encodeURIComponent(selectedConnection)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.success && Array.isArray(data.schemas)) {
+          setSchemas(data.schemas);
+          if (data.schemas.length > 0) {
+            setSelectedSchema(data.schemas[0]);
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingSchemas(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedConnection, agentPath]);
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!minimizing || !dialogRef.current) return;
+    const dialog = dialogRef.current;
+    const flowsBtn = document.querySelector<HTMLElement>("[data-flows-btn]");
+    if (!flowsBtn) return;
+
+    const dr = dialog.getBoundingClientRect();
+    const fr = flowsBtn.getBoundingClientRect();
+
+    const dialogCenterX = dr.left + dr.width / 2;
+    const dialogCenterY = dr.top + dr.height / 2;
+    const targetX = fr.left + fr.width / 2;
+    const targetY = fr.top + fr.height / 2;
+
+    const dx = targetX - dialogCenterX;
+    const dy = targetY - dialogCenterY;
+
+    dialog.style.setProperty("--minimize-tx", `${dx}px`);
+    dialog.style.setProperty("--minimize-ty", `${dy}px`);
+  }, [minimizing]);
+
+  const destConn = connections.find((c) => c.rowKey === selectedConnection);
+  const canSubmit = !!selectedConnection && !!selectedSchema;
+
+  function handleAddToFlow() {
+    if (!canSubmit || !sourceConn || !destConn) return;
+    onAddToFlow(
+      {
+        connectionRowKey: sourceConnectionRowKey,
+        serverName: sourceConn.serverName,
+        databaseName: sourceConn.databaseName,
+        schema,
+        tableName,
+      },
+      {
+        connectionRowKey: selectedConnection,
+        serverName: destConn.serverName,
+        databaseName: destConn.databaseName,
+        schema: selectedSchema,
+        tableName,
+      },
+    );
+  }
+
+  function handleSaveAndRunClick() {
+    if (!canSubmit) return;
+    setConfirmRunOpen(true);
+  }
+
+  function handleConfirmSaveAndRun() {
+    if (!canSubmit || !sourceConn || !destConn) return;
+    setConfirmRunOpen(false);
+    onSaveAndRun(
+      {
+        connectionRowKey: sourceConnectionRowKey,
+        serverName: sourceConn.serverName,
+        databaseName: sourceConn.databaseName,
+        schema,
+        tableName,
+      },
+      {
+        connectionRowKey: selectedConnection,
+        serverName: destConn.serverName,
+        databaseName: destConn.databaseName,
+        schema: selectedSchema,
+        tableName,
+      },
+      selectedConnection,
+      selectedSchema,
+    );
+  }
+
+  return (
+    <div className={`fullrun-modal-overlay${minimizing ? " fullrun-overlay-minimizing" : ""}`}>
+      <div
+        ref={dialogRef}
+        className={`fullrun-modal-dialog${minimizing ? " fullrun-modal-minimizing" : ""}`}
+        onAnimationEnd={minimizing ? onMinimizeEnd : undefined}
+      >
+        <div className="fullrun-modal-header">
+          <h2>Data Protection: Run (Apply to full dataset)</h2>
+        </div>
+
+        <div className="fullrun-modal-body">
+          <div className="fullrun-section">
+            <h3 className="fullrun-section-title">Source</h3>
+            <div className="fullrun-table-info">
+              {sourceConn
+                ? <><strong>{sourceConn.serverName}</strong>{sourceConn.databaseName ? ` / ${sourceConn.databaseName}` : ""}</>
+                : <span>Unknown connection</span>}
+              <span className="fullrun-source-table">{schema}.{tableName}</span>
+            </div>
+          </div>
+
+          <div className="fullrun-section">
+            <h3 className="fullrun-section-title">Destination</h3>
+            <div className="fullrun-form-row">
+              <label className="fullrun-form-label">Database:</label>
+              <select
+                className="fullrun-form-select"
+                value={selectedConnection}
+                onChange={(e) => setSelectedConnection(e.target.value)}
+              >
+                {connections.map((conn) => (
+                  <option key={conn.rowKey} value={conn.rowKey}>
+                    {conn.serverName}{conn.databaseName ? ` / ${conn.databaseName}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="fullrun-form-row">
+              <label className="fullrun-form-label">Schema:</label>
+              <select
+                className="fullrun-form-select"
+                value={selectedSchema}
+                onChange={(e) => setSelectedSchema(e.target.value)}
+                disabled={loadingSchemas || schemas.length === 0}
+              >
+                {loadingSchemas ? (
+                  <option value="">Loading...</option>
+                ) : schemas.length === 0 ? (
+                  <option value="">No schemas available</option>
+                ) : (
+                  schemas.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            <div className="fullrun-form-row">
+              <label className="fullrun-form-label">Table:</label>
+              <input
+                className="fullrun-form-select"
+                type="text"
+                value={tableName}
+                disabled
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="fullrun-modal-footer">
+          <button className="fullrun-btn fullrun-btn-cancel" onClick={onClose}>
+            Cancel
+          </button>
+          <div className="fullrun-footer-actions">
+            <button
+              className="fullrun-btn fullrun-btn-add-flow"
+              disabled={!canSubmit}
+              onClick={handleAddToFlow}
+            >
+              Save
+            </button>
+            <button
+              className="fullrun-btn fullrun-btn-run"
+              disabled={!canSubmit}
+              onClick={handleSaveAndRunClick}
+            >
+              Save &amp; Run
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {confirmRunOpen && destConn &&
+        createPortal(
+          <div className="fullrun-confirm-overlay" onMouseDown={() => setConfirmRunOpen(false)}>
+            <div className="fullrun-confirm-dialog" onMouseDown={(e) => e.stopPropagation()}>
+              <h3 className="fullrun-confirm-title">Confirm Run</h3>
+              <p className="fullrun-confirm-body">
+                This will overwrite all data in this table:{" "}
+                <strong>{destConn.databaseName}.{selectedSchema}.{tableName}</strong>
+              </p>
+              <div className="fullrun-confirm-actions">
+                <button
+                  className="fullrun-confirm-btn fullrun-confirm-btn-cancel"
+                  onClick={() => setConfirmRunOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="fullrun-confirm-btn fullrun-confirm-btn-confirm"
+                  onClick={handleConfirmSaveAndRun}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}

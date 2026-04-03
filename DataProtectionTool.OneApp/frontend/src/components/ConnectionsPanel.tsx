@@ -1,0 +1,1102 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import "./ConnectionsPanel.css";
+import ColumnRuleModal from "./ColumnRuleModal";
+
+export interface SavedConnection {
+  rowKey: string;
+  connectionType: string;
+  serverName: string;
+  authentication: string;
+  databaseName: string;
+  encrypt: string;
+  trustServerCertificate: boolean;
+  createdAt: string;
+}
+
+export interface TableInfo {
+  schema: string;
+  name: string;
+  fileFormatId?: string;
+}
+
+export interface QueryInfo {
+  rowKey: string;
+  connectionRowKey: string;
+  queryText: string;
+  createdAt: string;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  rowKey: string;
+  schema: string;
+  tableName: string;
+  isQuery: boolean;
+  isConnection: boolean;
+}
+
+interface ConnectionsPanelProps {
+  connections: SavedConnection[];
+  connectionTables: Record<string, TableInfo[]>;
+  connectionQueries: Record<string, QueryInfo[]>;
+  loadingTables: Set<string>;
+  dryRunningTables: Set<string>;
+  selectedTable: { rowKey: string; schema: string; tableName: string } | null;
+  selectedQuery: { connectionRowKey: string; queryRowKey: string; queryText: string } | null;
+  tableTabCounts: Record<string, number>;
+  expanded: Set<string>;
+  onExpandedChange: (next: Set<string>) => void;
+  width: number;
+  onExpandConnection: (rowKey: string) => void;
+  onTableClick: (rowKey: string, schema: string, tableName: string) => void;
+  onQueryClick: (connectionRowKey: string, queryRowKey: string, queryText: string) => void;
+  onReloadPreview: () => void;
+  onRefreshConnection: (rowKey: string) => void;
+  onDryRun: (rowKey: string, schema: string, tableName: string) => void;
+  onFullRun: (rowKey: string, schema: string, tableName: string) => void;
+  onSwitchPanel: (panel: "connections" | "flows") => void;
+  onWidthChange?: (width: number) => void;
+  flowsBadgeCount?: number;
+  connectionsBadgeCount?: number;
+  newConnectionRowKeys?: Set<string>;
+  onDismissNewBadge?: (rowKey: string) => void;
+  checkedTables?: Set<string>;
+  onCheckedTablesChange?: (next: Set<string>) => void;
+  onProfileData?: (tableKeys: string[]) => void;
+  profiledTables?: Map<string, number>;
+  profileFailedTables?: Set<string>;
+  onApplySanitization?: (tableKeys: string[]) => void;
+  starredTables?: Set<string>;
+  onStarredTablesChange?: (next: Set<string>) => void;
+  checkedQueries?: Set<string>;
+  onCheckedQueriesChange?: (next: Set<string>) => void;
+  starredQueries?: Set<string>;
+  onStarredQueriesChange?: (next: Set<string>) => void;
+  queryColumns?: Record<string, { name: string; type: string }[]>;
+  onFetchQueryColumns?: (connectionRowKey: string, queryRowKey: string, queryText: string) => void;
+  tableColumns?: Record<string, { name: string; type: string }[]>;
+  onFetchTableColumns?: (rowKey: string, schema: string, tableName: string) => void;
+  tableColumnRules?: Record<string, Record<string, unknown>[]>;
+  allAlgorithms?: Record<string, unknown>[];
+  allDomains?: Record<string, unknown>[];
+  allFrameworks?: Record<string, unknown>[];
+  onFetchTableColumnRules?: (tKey: string, fileFormatId: string) => void;
+  onSaveColumnRule?: (tKey: string, params: { fileFieldMetadataId: string; algorithmName: string; domainName: string }) => Promise<void>;
+  onDisableColumnRule?: (tKey: string, fileFieldMetadataId: string) => Promise<void>;
+  onRestoreColumnRule?: (tKey: string, params: { fileFieldMetadataId: string; algorithmName: string; domainName: string }) => Promise<void>;
+  profileResultActiveTable?: string | null;
+  onProfileResultClick?: (rowKey: string, schema: string, tableName: string) => void;
+  hoveredColumn?: string | null;
+  clickedColumn?: string | null;
+  onHoveredColumnChange?: (col: string | null) => void;
+  onClickedColumnChange?: (col: string | null) => void;
+}
+
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 500;
+
+export default function ConnectionsPanel({
+  connections,
+  connectionTables,
+  connectionQueries,
+  loadingTables,
+  dryRunningTables,
+  selectedTable,
+  selectedQuery,
+  tableTabCounts: _tableTabCounts,
+  expanded,
+  onExpandedChange,
+  width,
+  onExpandConnection,
+  onTableClick,
+  onQueryClick,
+  onReloadPreview,
+  onRefreshConnection,
+  onDryRun,
+  onFullRun,
+  onSwitchPanel: _onSwitchPanel,
+  onWidthChange,
+  flowsBadgeCount: _flowsBadgeCount,
+  connectionsBadgeCount: _connectionsBadgeCount,
+  newConnectionRowKeys,
+  onDismissNewBadge,
+  checkedTables,
+  onCheckedTablesChange,
+  onProfileData,
+  profiledTables,
+  profileFailedTables: _profileFailedTables,
+  onApplySanitization,
+  starredTables,
+  onStarredTablesChange,
+  checkedQueries,
+  onCheckedQueriesChange,
+  starredQueries,
+  onStarredQueriesChange,
+  queryColumns,
+  onFetchQueryColumns,
+  tableColumns,
+  onFetchTableColumns,
+  tableColumnRules,
+  allAlgorithms,
+  allDomains,
+  allFrameworks,
+  onFetchTableColumnRules,
+  onSaveColumnRule,
+  onDisableColumnRule,
+  onRestoreColumnRule,
+  profileResultActiveTable,
+  onProfileResultClick,
+  hoveredColumn,
+  clickedColumn,
+  onHoveredColumnChange,
+  onClickedColumnChange,
+}: ConnectionsPanelProps) {
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
+  const [expandedQueries, setExpandedQueries] = useState<Set<string>>(new Set());
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [selectMenuOpen, setSelectMenuOpen] = useState(false);
+  const [columnRuleModal, setColumnRuleModal] = useState<{ rule: Record<string, unknown>; tKey: string } | null>(null);
+  const [disabledRules, setDisabledRules] = useState<Map<string, { algorithmName: string; domainName: string }>>(new Map());
+  const [emptyTooltipVisible, setEmptyTooltipVisible] = useState(false);
+  const [emptyTooltipShake, setEmptyTooltipShake] = useState(false);
+  const emptyTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const selectRef = useRef<HTMLDivElement>(null);
+  const isResizing = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const preSearchExpanded = useRef<Set<string> | null>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    const startX = e.clientX;
+    const startWidth = width;
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!isResizing.current) return;
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + ev.clientX - startX));
+      onWidthChange?.(newWidth);
+    }
+
+    function onMouseUp() {
+      isResizing.current = false;
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [width, onWidthChange]);
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isResizing.current) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const prev = el.style.width;
+    el.style.width = "max-content";
+    const measured = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, el.scrollWidth));
+    el.style.width = prev;
+    if (measured !== width) {
+      onWidthChange?.(measured);
+    }
+  }, [connections, connectionTables, connectionQueries, expanded]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    function dismiss() { setContextMenu(null); }
+    document.addEventListener("mousedown", dismiss);
+    return () => document.removeEventListener("mousedown", dismiss);
+  }, [contextMenu]);
+
+  function handleTableContextMenu(
+    e: React.MouseEvent,
+    rowKey: string,
+    schema: string,
+    tableName: string,
+    isQuery = false,
+    isConnection = false,
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, rowKey, schema, tableName, isQuery, isConnection });
+  }
+
+  const grouped = useMemo(() => {
+    const groups: Record<string, SavedConnection[]> = {};
+    for (const conn of connections) {
+      const type = conn.connectionType || "Other";
+      if (!groups[type]) groups[type] = [];
+      groups[type].push(conn);
+    }
+    for (const type of Object.keys(groups)) {
+      groups[type].sort((a, b) => {
+        const ta = a.createdAt ?? "";
+        const tb = b.createdAt ?? "";
+        return tb.localeCompare(ta);
+      });
+    }
+    return groups;
+  }, [connections]);
+
+  function handleToggle(rowKey: string) {
+    if (newConnectionRowKeys?.has(rowKey)) {
+      onDismissNewBadge?.(rowKey);
+    }
+    const next = new Set(expanded);
+    if (next.has(rowKey)) {
+      next.delete(rowKey);
+      const tables = connectionTables[rowKey];
+      if (tables && checkedTables && checkedTables.size > 0) {
+        const nextChecked = new Set(checkedTables);
+        for (const t of tables) {
+          nextChecked.delete(`${rowKey}:${t.schema}:${t.name}`);
+        }
+        if (nextChecked.size !== checkedTables.size) {
+          onCheckedTablesChange?.(nextChecked);
+        }
+      }
+    } else {
+      next.add(rowKey);
+      onExpandConnection(rowKey);
+    }
+    onExpandedChange(next);
+  }
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    function dismiss(e: MouseEvent) {
+      if (actionsRef.current && !actionsRef.current.contains(e.target as Node)) {
+        setActionsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", dismiss);
+    return () => document.removeEventListener("mousedown", dismiss);
+  }, [actionsOpen]);
+
+  useEffect(() => {
+    if (!selectMenuOpen) return;
+    function dismiss(e: MouseEvent) {
+      if (selectRef.current && !selectRef.current.contains(e.target as Node)) {
+        setSelectMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", dismiss);
+    return () => document.removeEventListener("mousedown", dismiss);
+  }, [selectMenuOpen]);
+
+  const searchLower = searchText.toLowerCase();
+
+  useEffect(() => {
+    if (!searchText) {
+      if (preSearchExpanded.current) {
+        onExpandedChange(preSearchExpanded.current);
+        preSearchExpanded.current = null;
+      }
+      return;
+    }
+    if (!preSearchExpanded.current) {
+      preSearchExpanded.current = new Set(expanded);
+    }
+    const next = new Set(preSearchExpanded.current);
+    for (const conn of connections) {
+      const tables = connectionTables[conn.rowKey];
+      if (!tables) continue;
+      if (tables.some(t => `${t.schema}.${t.name}`.toLowerCase().includes(searchText.toLowerCase()))) {
+        next.add(conn.rowKey);
+        onExpandConnection(conn.rowKey);
+      }
+    }
+    onExpandedChange(next);
+  }, [searchText]);
+
+  function filteredTables(rowKey: string) {
+    const t = connectionTables[rowKey];
+    if (!t || !searchText) return t;
+    return t.filter((item) => `${item.schema}.${item.name}`.toLowerCase().includes(searchLower));
+  }
+
+  function filteredQueries(rowKey: string) {
+    const q = connectionQueries[rowKey];
+    if (!q || !searchText) return q;
+    return q.filter((item) => item.queryText.toLowerCase().includes(searchLower));
+  }
+
+  const visibleTableKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const conn of connections) {
+      if (!expanded.has(conn.rowKey)) continue;
+      const tables = searchText ? filteredTables(conn.rowKey) : connectionTables[conn.rowKey];
+      if (!tables) continue;
+      for (const t of tables) {
+        keys.push(`${conn.rowKey}:${t.schema}:${t.name}`);
+      }
+    }
+    return keys;
+  }, [connections, connectionTables, expanded, searchText]);
+
+  useEffect(() => {
+    if (!checkedTables || checkedTables.size === 0) return;
+    const visibleSet = new Set(visibleTableKeys);
+    let changed = false;
+    for (const key of checkedTables) {
+      if (!visibleSet.has(key)) { changed = true; break; }
+    }
+    if (changed) {
+      const next = new Set<string>();
+      for (const key of checkedTables) {
+        if (visibleSet.has(key)) next.add(key);
+      }
+      onCheckedTablesChange?.(next);
+    }
+  }, [visibleTableKeys]);
+
+  function handleSelectAll() {
+    onCheckedTablesChange?.(new Set(visibleTableKeys));
+    setSelectMenuOpen(false);
+  }
+
+  function handleSelectNone() {
+    onCheckedTablesChange?.(new Set());
+    setSelectMenuOpen(false);
+  }
+
+  function handleSelectCheckboxClick() {
+    if (visibleTableKeys.length === 0) {
+      if (emptyTooltipVisible) {
+        setEmptyTooltipShake(false);
+        requestAnimationFrame(() => setEmptyTooltipShake(true));
+      } else {
+        setEmptyTooltipVisible(true);
+        setEmptyTooltipShake(false);
+      }
+      if (emptyTooltipTimer.current) clearTimeout(emptyTooltipTimer.current);
+      emptyTooltipTimer.current = setTimeout(() => {
+        setEmptyTooltipVisible(false);
+        setEmptyTooltipShake(false);
+      }, 2000);
+      return;
+    }
+    if (hasChecked) {
+      onCheckedTablesChange?.(new Set());
+    } else {
+      onCheckedTablesChange?.(new Set(visibleTableKeys));
+    }
+  }
+
+  function handleSelectStarred() {
+    const next = new Set<string>();
+    for (const key of visibleTableKeys) {
+      if (starredTables?.has(key)) next.add(key);
+    }
+    onCheckedTablesChange?.(next);
+    setSelectMenuOpen(false);
+  }
+
+  function handleSelectUnstarred() {
+    const next = new Set<string>();
+    for (const key of visibleTableKeys) {
+      if (!starredTables?.has(key)) next.add(key);
+    }
+    onCheckedTablesChange?.(next);
+    setSelectMenuOpen(false);
+  }
+
+  function handleRefreshAll() {
+    for (const conn of connections) {
+      onRefreshConnection(conn.rowKey);
+    }
+  }
+
+  function handleStarToggle(e: React.MouseEvent, key: string) {
+    e.stopPropagation();
+    const next = new Set(starredTables);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    onStarredTablesChange?.(next);
+  }
+
+  function handleCheckboxToggle(e: React.MouseEvent, key: string) {
+    e.stopPropagation();
+    const next = new Set(checkedTables);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    onCheckedTablesChange?.(next);
+  }
+
+  const hasChecked = (checkedTables?.size ?? 0) > 0;
+
+  function handleTableExpandToggle(tKey: string, rowKey: string, schema: string, tableName: string, fileFormatId?: string) {
+    const next = new Set(expandedTables);
+    if (next.has(tKey)) {
+      next.delete(tKey);
+    } else {
+      next.add(tKey);
+      if (!tableColumns?.[tKey]) {
+        onFetchTableColumns?.(rowKey, schema, tableName);
+      }
+      if (fileFormatId && !tableColumnRules?.[tKey]) {
+        onFetchTableColumnRules?.(tKey, fileFormatId);
+      }
+    }
+    setExpandedTables(next);
+  }
+
+  function handleQueryStarToggle(e: React.MouseEvent, key: string) {
+    e.stopPropagation();
+    const next = new Set(starredQueries);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    onStarredQueriesChange?.(next);
+  }
+
+  function handleQueryCheckboxToggle(e: React.MouseEvent, key: string) {
+    e.stopPropagation();
+    const next = new Set(checkedQueries);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    onCheckedQueriesChange?.(next);
+  }
+
+  function handleQueryExpandToggle(qKey: string, connectionRowKey: string, queryRowKey: string, queryText: string) {
+    const next = new Set(expandedQueries);
+    if (next.has(qKey)) {
+      next.delete(qKey);
+    } else {
+      next.add(qKey);
+      if (!queryColumns?.[qKey]) {
+        onFetchQueryColumns?.(connectionRowKey, queryRowKey, queryText);
+      }
+    }
+    setExpandedQueries(next);
+    onQueryClick(connectionRowKey, queryRowKey, queryText);
+  }
+
+  const isExpanded = (rowKey: string) => expanded.has(rowKey);
+  const isLoading = (rowKey: string) => loadingTables.has(rowKey);
+
+  return (
+    <>
+    <div ref={panelRef} className="connections-panel" style={{ width }}>
+      <div className="connections-panel-header">
+        <span className="panel-title-text">Connections and Data Items</span>
+      </div>
+      <div className="conn-google-search-box">
+        <div className="conn-toolbar">
+          <div className="conn-search-wrapper">
+            <svg className="conn-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M9.5 9.5L13 13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+            <input
+              className="conn-search-input"
+              type="text"
+              placeholder="Search tables..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="conn-icon-bar">
+        <div className="conn-icon-btn-wrapper conn-select-split" ref={selectRef} data-tooltip={selectMenuOpen || emptyTooltipVisible ? undefined : "Select"}>
+          <button
+            className="conn-icon-btn conn-select-arrow-btn"
+            aria-label="Select options"
+            onClick={() => setSelectMenuOpen((v) => !v)}
+          >
+            <span className="conn-select-arrow-checkbox-space" />
+            <svg className="conn-icon-btn-caret" width="14" height="14" viewBox="0 0 12 12" fill="none">
+              <path d="M1.5 3.5L6 8.5L10.5 3.5" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            className="conn-icon-btn conn-select-checkbox-btn"
+            aria-label={hasChecked ? "Deselect all" : "Select all visible"}
+            onClick={(e) => { e.stopPropagation(); handleSelectCheckboxClick(); }}
+          >
+            <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="3" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4" fill="none" />
+              {hasChecked && (
+                <line x1="4.5" y1="8" x2="9.5" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              )}
+            </svg>
+          </button>
+          {emptyTooltipVisible && (
+            <span className={`conn-select-empty-tooltip${emptyTooltipShake ? " conn-select-empty-tooltip-shake" : ""}`}>
+              No items available
+            </span>
+          )}
+          {selectMenuOpen && (
+            <div className="conn-icon-dropdown">
+              <div className="conn-icon-dropdown-item" onClick={handleSelectAll}>All</div>
+              <div className="conn-icon-dropdown-item" onClick={handleSelectNone}>None</div>
+              <div className="conn-icon-dropdown-item" onClick={handleSelectStarred}>Starred</div>
+              <div className="conn-icon-dropdown-item" onClick={handleSelectUnstarred}>Unstarred</div>
+            </div>
+          )}
+        </div>
+        {hasChecked ? (
+          <>
+            <div className="conn-icon-btn-wrapper" data-tooltip="Profile Data">
+              <button
+                className="conn-icon-btn"
+                aria-label="Profile Data"
+                onClick={() => onProfileData?.(Array.from(checkedTables ?? []))}
+              >
+                <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                  <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.4" />
+                  <circle cx="6.5" cy="6.5" r="3.2" stroke="currentColor" strokeWidth="0.8" opacity="0.45" />
+                  <path d="M10.2 10.2L14.5 14.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="conn-icon-btn-wrapper" data-tooltip="Apply Sanitization">
+              <button
+                className="conn-icon-btn"
+                aria-label="Apply Sanitization"
+                onClick={() => onApplySanitization?.(Array.from(checkedTables ?? []))}
+              >
+                <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 1.5L2.5 4.5V7.5C2.5 11 5 13.5 8 14.5C11 13.5 13.5 11 13.5 7.5V4.5L8 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" fill="none" />
+                  <path d="M5.5 8L7.2 9.7L10.5 6.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="conn-icon-btn-wrapper" data-tooltip="Refresh">
+            <button
+              className="conn-icon-btn"
+              aria-label="Refresh"
+              onClick={handleRefreshAll}
+            >
+              <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+                <path d="M13.5 8A5.5 5.5 0 0 1 3.05 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                <path d="M2.5 8A5.5 5.5 0 0 1 12.95 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                <path d="M12.95 3V6H9.95" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M3.05 13V10H6.05" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
+        )}
+        <div className="conn-icon-btn-wrapper" ref={actionsRef} data-tooltip={actionsOpen ? undefined : "Action"}>
+          <button
+            className="conn-icon-btn"
+            aria-label="Action"
+            onClick={() => setActionsOpen((v) => !v)}
+          >
+            <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="3.5" r="1.2" fill="currentColor" />
+              <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+              <circle cx="8" cy="12.5" r="1.2" fill="currentColor" />
+            </svg>
+          </button>
+          {actionsOpen && (
+            <div className="conn-icon-dropdown">
+              <div
+                className="conn-icon-dropdown-item"
+                onClick={() => {
+                  setActionsOpen(false);
+                  const allKeys = new Set(connections.map(c => c.rowKey));
+                  for (const rk of allKeys) onExpandConnection(rk);
+                  onExpandedChange(allKeys);
+                }}
+              >
+                Expand All
+              </div>
+              <div
+                className="conn-icon-dropdown-item"
+                onClick={() => {
+                  setActionsOpen(false);
+                  onExpandedChange(new Set());
+                  setExpandedTables(new Set());
+                  if (checkedTables && checkedTables.size > 0) {
+                    onCheckedTablesChange?.(new Set());
+                  }
+                }}
+              >
+                Collapse All
+              </div>
+            </div>
+          )}
+        </div>
+        {(checkedTables?.size ?? 0) > 0 && (
+          <span className="conn-icon-bar-selected-text">{checkedTables!.size} selected</span>
+        )}
+        </div>
+      </div>
+      {connections.length === 0 ? (
+        <p className="connections-panel-empty">No saved connections.</p>
+      ) : (
+        <div className="connections-list">
+          {Object.entries(grouped).map(([type, conns]) => {
+            const visibleConns = conns;
+            if (visibleConns.length === 0) return null;
+            return (
+            <div key={type} className="conn-group">
+              <ul className="conn-group-list">
+                {visibleConns.map((conn) => {
+                  const fTables = filteredTables(conn.rowKey);
+                  const fQueries = filteredQueries(conn.rowKey);
+                  return (
+                  <li key={conn.rowKey} className="connections-list-entry">
+                    <div
+                      className="connections-list-item"
+                      onClick={() => handleToggle(conn.rowKey)}
+                      onContextMenu={(e) => handleTableContextMenu(e, conn.rowKey, "", "", false, true)}
+                    >
+                      <button
+                        className={`conn-expand-btn ${isExpanded(conn.rowKey) ? "expanded" : ""}`}
+                        aria-label={isExpanded(conn.rowKey) ? "Collapse" : "Expand"}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 12 12">
+                          <path d="M4 2 L8 6 L4 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                      <div className="conn-details">
+                        <span className="conn-server">
+                          {conn.serverName}
+                          {conn.connectionType === "SqlServer" && (
+                            <span className="conn-server-type-badge">SQL Server</span>
+                          )}
+                        </span>
+                        {conn.databaseName && (
+                          <span className="conn-db">{conn.databaseName}</span>
+                        )}
+                      </div>
+                      {newConnectionRowKeys?.has(conn.rowKey) && (
+                        <span className="conn-new-badge">new</span>
+                      )}
+                    </div>
+                    {isExpanded(conn.rowKey) && (
+                      <div className="conn-tables">
+                        {isLoading(conn.rowKey) ? (
+                          <div className="conn-tables-loading">Loading...</div>
+                        ) : (
+                          <>
+                            {fQueries && fQueries.length > 0 && (
+                              <ul className="conn-tables-list">
+                                {fQueries.map((q) => {
+                                  const qKey = `${conn.rowKey}:${q.rowKey}`;
+                                  const isSelected = selectedQuery?.connectionRowKey === conn.rowKey
+                                    && selectedQuery?.queryRowKey === q.rowKey;
+                                  const isChecked = checkedQueries?.has(qKey) ?? false;
+                                  const isQueryExpanded = expandedQueries.has(qKey);
+                                  const qCols = queryColumns?.[qKey];
+                                  const label = q.queryText.length > 40
+                                    ? q.queryText.substring(0, 40) + "..."
+                                    : q.queryText;
+                                  return (
+                                    <li
+                                      key={q.rowKey}
+                                      className={`conn-table-entry conn-query-entry${isQueryExpanded ? " conn-table-entry-expanded" : ""}${isChecked ? " conn-table-entry-checked" : ""}`}
+                                    >
+                                      <div
+                                        className={`conn-table-item conn-query-item${isSelected ? " conn-table-item-selected" : ""}`}
+                                        onClick={() => handleQueryExpandToggle(qKey, conn.rowKey, q.rowKey, q.queryText)}
+                                        onContextMenu={(e) => handleTableContextMenu(e, conn.rowKey, "", q.rowKey, true)}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="conn-table-checkbox"
+                                          checked={isChecked}
+                                          onClick={(e) => handleQueryCheckboxToggle(e as unknown as React.MouseEvent, qKey)}
+                                          onChange={() => {}}
+                                        />
+                                        <svg
+                                          className={`conn-table-star${starredQueries?.has(qKey) ? " conn-table-star-active" : ""}`}
+                                          width="14"
+                                          height="14"
+                                          viewBox="0 0 14 14"
+                                          onClick={(e) => handleQueryStarToggle(e, qKey)}
+                                        >
+                                          <path
+                                            d="M7 1.5L8.76 5.1L12.7 5.64L9.85 8.42L10.52 12.34L7 10.48L3.48 12.34L4.15 8.42L1.3 5.64L5.24 5.1L7 1.5Z"
+                                            fill={starredQueries?.has(qKey) ? "#f5c518" : "#fff"}
+                                            stroke={starredQueries?.has(qKey) ? "#f5c518" : "#555"}
+                                            strokeWidth="1"
+                                            strokeLinejoin="round"
+                                          />
+                                        </svg>
+                                        <span className="conn-table-icon-wrapper">
+                                          <svg className="conn-table-icon conn-query-icon" width="14" height="14" viewBox="0 0 14 14">
+                                            <path d="M2 2 L12 2 L12 12 L2 12 Z" fill="none" stroke="currentColor" strokeWidth="1" rx="1" />
+                                            <path d="M4 5 L10 5 M4 7 L9 7 M4 9 L7 9" stroke="currentColor" strokeWidth="0.8" strokeLinecap="round" />
+                                          </svg>
+                                        </span>
+                                        <span className="conn-table-name" title={q.queryText}>{label}</span>
+                                      </div>
+                                      {isQueryExpanded && (
+                                        <ul className="conn-table-columns">
+                                          {qCols ? (
+                                            qCols.map((col) => (
+                                              <li key={col.name} className="conn-table-column-row">
+                                                <span className="conn-table-column-name">{col.name}</span>
+                                                <span className="conn-table-column-type">{col.type}</span>
+                                              </li>
+                                            ))
+                                          ) : (
+                                            <li className="conn-table-column-row conn-table-columns-loading">Loading columns...</li>
+                                          )}
+                                        </ul>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                            {fTables ? (
+                              fTables.length === 0 && (!fQueries || fQueries.length === 0) ? (
+                                <div className="conn-tables-empty">{searchText ? "No matches" : "Empty"}</div>
+                              ) : (
+                                <ul className="conn-tables-list">
+                                  {fTables.map((t) => {
+                                    const tKey = `${conn.rowKey}:${t.schema}:${t.name}`;
+                                    const isSelected = selectedTable?.rowKey === conn.rowKey
+                                      && selectedTable?.schema === t.schema
+                                      && selectedTable?.tableName === t.name;
+                                    const isDryRunning = dryRunningTables.has(tKey);
+                                    const profileCount = profiledTables?.get(tKey) ?? 0;
+                                    const isProfiled = profileCount > 0;
+                                    const isChecked = checkedTables?.has(tKey) ?? false;
+                                    const isTableExpanded = expandedTables.has(tKey);
+                                    const isProfileResultActive = profileResultActiveTable === tKey;
+                                    const cols = tableColumns?.[tKey];
+                                    return (
+                                      <li
+                                        key={`${t.schema}.${t.name}`}
+                                        className={`conn-table-entry${isTableExpanded ? " conn-table-entry-expanded" : ""}${isChecked ? " conn-table-entry-checked" : ""}`}
+                                      >
+                                        <div
+                                          className={`conn-table-item${isProfileResultActive ? " conn-table-item-profile-active" : isSelected ? " conn-table-item-selected" : ""}`}
+                                          onClick={() => {
+                                            handleTableExpandToggle(tKey, conn.rowKey, t.schema, t.name, t.fileFormatId);
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="conn-table-checkbox"
+                                            checked={isChecked}
+                                            onClick={(e) => handleCheckboxToggle(e as unknown as React.MouseEvent, tKey)}
+                                            onChange={() => {}}
+                                          />
+                                          <svg
+                                            className={`conn-table-star${starredTables?.has(tKey) ? " conn-table-star-active" : ""}`}
+                                            width="14"
+                                            height="14"
+                                            viewBox="0 0 14 14"
+                                            onClick={(e) => handleStarToggle(e, tKey)}
+                                          >
+                                            <path
+                                              d="M7 1.5L8.76 5.1L12.7 5.64L9.85 8.42L10.52 12.34L7 10.48L3.48 12.34L4.15 8.42L1.3 5.64L5.24 5.1L7 1.5Z"
+                                              fill={starredTables?.has(tKey) ? "#f5c518" : "#fff"}
+                                              stroke={starredTables?.has(tKey) ? "#f5c518" : "#555"}
+                                              strokeWidth="1"
+                                              strokeLinejoin="round"
+                                            />
+                                          </svg>
+                                          <span className="conn-table-icon-wrapper">
+                                            {isDryRunning && (
+                                              <svg className="conn-table-profiling-icon" width="12" height="12" viewBox="0 0 16 16" fill="none">
+                                                <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.4" />
+                                                <path d="M10.2 10.2L14.5 14.5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                                              </svg>
+                                            )}
+                                            <svg className="conn-table-icon" width="14" height="14" viewBox="0 0 14 14">
+                                              <rect x="1" y="1" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1" />
+                                              <line x1="1" y1="5" x2="13" y2="5" stroke="currentColor" strokeWidth="1" />
+                                              <line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" strokeWidth="1" />
+                                              <line x1="5" y1="5" x2="5" y2="13" stroke="currentColor" strokeWidth="1" />
+                                            </svg>
+                                          </span>
+                                          <span className="conn-table-name">{t.schema}.{t.name}</span>
+                                          {isProfiled && (
+                                            <span
+                                              className="conn-table-profile-result-badge"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!isTableExpanded) {
+                                                  handleTableExpandToggle(tKey, conn.rowKey, t.schema, t.name, t.fileFormatId);
+                                                }
+                                                if (onProfileResultClick) {
+                                                  onProfileResultClick(conn.rowKey, t.schema, t.name);
+                                                } else {
+                                                  onTableClick?.(conn.rowKey, t.schema, t.name);
+                                                }
+                                              }}
+                                              title={`View ${profileCount} ${profileCount === 1 ? "profile" : "profiles"}`}
+                                            >
+                                              <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                                                <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.6" />
+                                                <path d="M10.2 10.2L14.5 14.5" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" />
+                                              </svg>
+                                              {profileCount} {profileCount === 1 ? "profile" : "profiles"}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {isTableExpanded && (() => {
+                                          const hasFormat = !!t.fileFormatId;
+                                          const rules = hasFormat ? tableColumnRules?.[tKey] : undefined;
+                                          const rulesByField = new Map<string, Record<string, unknown>>();
+                                          if (rules) {
+                                            for (const r of rules) {
+                                              const fn = r.fieldName;
+                                              if (typeof fn === "string") rulesByField.set(fn, r);
+                                            }
+                                          }
+                                          return (
+                                            <ul className="conn-table-columns">
+                                              {cols ? (
+                                                cols.map((col) => {
+                                                  const rule = rulesByField.get(col.name);
+                                                  const algName = rule && rule.isMasked !== false && typeof rule.algorithmName === "string"
+                                                    ? rule.algorithmName : "";
+                                                  const metaId = rule && (typeof rule.fileFieldMetadataId === "string" || typeof rule.fileFieldMetadataId === "number")
+                                                    ? String(rule.fileFieldMetadataId) : "";
+                                                  const noRule = !rule || (rule as Record<string, unknown>)._noRule === true;
+                                                  const isDisabledByEngine = !!rule && rule.isMasked === false;
+                                                  const savedPrev = metaId ? disabledRules.get(metaId) : undefined;
+                                                  const isDisabled = isDisabledByEngine || !!savedPrev;
+                                                  const hasActiveAlg = !!algName && !isDisabled;
+                                                  const isColClicked = isProfileResultActive && clickedColumn === col.name;
+                                                  const isColHovered = isProfileResultActive && !isColClicked && hoveredColumn === col.name;
+                                                  return (
+                                                    <li
+                                                      key={col.name}
+                                                      className={`conn-table-column-row${isColClicked ? " column-highlight-click" : isColHovered ? " column-highlight-hover" : ""}`}
+                                                      onMouseEnter={isProfileResultActive ? () => onHoveredColumnChange?.(col.name) : undefined}
+                                                      onMouseLeave={isProfileResultActive ? () => onHoveredColumnChange?.(null) : undefined}
+                                                      onClick={isProfileResultActive ? (e) => { e.stopPropagation(); onClickedColumnChange?.(clickedColumn === col.name ? null : col.name); } : undefined}
+                                                    >
+                                                      <span className="conn-table-column-name">{col.name}</span>
+                                                      <span className="conn-table-column-type">{col.type}</span>
+                                                      {hasFormat && (
+                                                        <span
+                                                          className={`conn-column-algo-badge${hasActiveAlg ? "" : " conn-column-algo-badge-none"}`}
+                                                          title={hasActiveAlg ? algName : "None"}
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setColumnRuleModal({
+                                                              rule: rule ?? { fieldName: col.name, _noRule: true },
+                                                              tKey,
+                                                            });
+                                                          }}
+                                                        >
+                                                          <span className="conn-column-algo-badge-text">{hasActiveAlg ? algName : "None"}</span>
+                                                          {hasActiveAlg && metaId && onDisableColumnRule && (
+                                                            <span
+                                                              className="conn-column-algo-badge-action"
+                                                              title="Disable rule"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                const prevAlg = rule && typeof rule.algorithmName === "string" ? rule.algorithmName : "";
+                                                                const prevDom = rule && typeof rule.domainName === "string" ? rule.domainName : "";
+                                                                setDisabledRules(prev => {
+                                                                  const next = new Map(prev);
+                                                                  next.set(metaId, { algorithmName: prevAlg, domainName: prevDom });
+                                                                  return next;
+                                                                });
+                                                                onDisableColumnRule(tKey, metaId);
+                                                              }}
+                                                            >
+                                                              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                                                                <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                                                              </svg>
+                                                            </span>
+                                                          )}
+                                                          {isDisabled && !noRule && metaId && savedPrev && onRestoreColumnRule && (
+                                                            <span
+                                                              className="conn-column-algo-badge-action conn-column-algo-badge-restore"
+                                                              title="Restore rule"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                onRestoreColumnRule(tKey, {
+                                                                  fileFieldMetadataId: metaId,
+                                                                  algorithmName: savedPrev.algorithmName,
+                                                                  domainName: savedPrev.domainName,
+                                                                });
+                                                                setDisabledRules(prev => {
+                                                                  const next = new Map(prev);
+                                                                  next.delete(metaId);
+                                                                  return next;
+                                                                });
+                                                              }}
+                                                            >
+                                                              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                                                                <path d="M2 5.5a4 4 0 0 1 7.5-1.5M10 2v2.5H7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                <path d="M10 6.5a4 4 0 0 1-7.5 1.5M2 10V7.5h2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                                                              </svg>
+                                                            </span>
+                                                          )}
+                                                        </span>
+                                                      )}
+                                                    </li>
+                                                  );
+                                                })
+                                              ) : (
+                                                <li className="conn-table-column-row conn-table-columns-loading">Loading columns...</li>
+                                              )}
+                                            </ul>
+                                          );
+                                        })()}
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                  );
+                })}
+              </ul>
+            </div>
+            );
+          })}
+        </div>
+      )}
+      <div
+        className="connections-panel-resize"
+        onMouseDown={handleResizeStart}
+      />
+    </div>
+    {contextMenu && createPortal(
+      <div
+        className="conn-context-menu"
+        style={{ top: contextMenu.y, left: contextMenu.x }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {contextMenu.isConnection ? (
+          <div
+            className="conn-context-menu-item"
+            onClick={() => {
+              const { rowKey } = contextMenu;
+              setContextMenu(null);
+              onRefreshConnection(rowKey);
+            }}
+          >
+            Refresh
+          </div>
+        ) : (
+          <>
+            {contextMenu.isQuery ? (
+              <div
+                className="conn-context-menu-item"
+                onClick={() => {
+                  setContextMenu(null);
+                  onReloadPreview();
+                }}
+              >
+                Refresh
+              </div>
+            ) : (
+              <>
+                <div className="conn-context-menu-parent">
+                  Sample
+                  <div className="conn-context-submenu">
+                    <div
+                      className="conn-context-menu-item"
+                      onClick={() => {
+                        setContextMenu(null);
+                        onReloadPreview();
+                      }}
+                    >
+                      Sample Data
+                    </div>
+                    <div
+                      className="conn-context-menu-item conn-context-menu-item-disabled"
+                      title="Coming soon"
+                    >
+                      Sample from Query
+                    </div>
+                  </div>
+                </div>
+                <div className="conn-context-menu-parent">
+                  Data Protection
+                  <div className="conn-context-submenu">
+                    <div
+                      className="conn-context-menu-item"
+                      onClick={() => {
+                        const { rowKey, schema, tableName } = contextMenu;
+                        setContextMenu(null);
+                        onDryRun(rowKey, schema, tableName);
+                      }}
+                    >
+                      Preview
+                      <span className="conn-context-menu-subtitle">View sample output without saving changes</span>
+                    </div>
+                    {(() => {
+                      const t = connectionTables[contextMenu.rowKey]?.find(
+                        (ti) => ti.schema === contextMenu.schema && ti.name === contextMenu.tableName
+                      );
+                      const hasFormat = !!t?.fileFormatId;
+                      return (
+                        <div
+                          className={`conn-context-menu-item${hasFormat ? "" : " conn-context-menu-item-disabled"}`}
+                          title={hasFormat ? undefined : "You must run Preview first."}
+                          onClick={() => {
+                            if (!hasFormat) return;
+                            const { rowKey, schema, tableName } = contextMenu;
+                            setContextMenu(null);
+                            onFullRun(rowKey, schema, tableName);
+                          }}
+                        >
+                          Run
+                          <span className="conn-context-menu-subtitle">Apply to full dataset</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>,
+      document.body,
+    )}
+    {columnRuleModal && allAlgorithms && allDomains && allFrameworks && (
+      <ColumnRuleModal
+        selectedRule={columnRuleModal.rule}
+        allAlgorithms={allAlgorithms}
+        allDomains={allDomains}
+        allFrameworks={allFrameworks}
+        onSave={(params) => {
+          if (!onSaveColumnRule) return Promise.resolve();
+          return onSaveColumnRule(columnRuleModal.tKey, params);
+        }}
+        onClose={() => setColumnRuleModal(null)}
+      />
+    )}
+    </>
+  );
+}

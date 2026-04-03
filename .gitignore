@@ -1,0 +1,38 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+project.lock.json
+*.nuget.props
+*.nuget.targets
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Azurite (local Azure Storage emulator)
+.azurite/
+
+# IDE / Editor
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+appsettings.Development.json
+
+# Logs
+*.log
