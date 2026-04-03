@@ -25,6 +25,8 @@ dist/
 *.swo
 *~
 
+DataProtectionTool.OneApp/wwwroot/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -36,3 +38,4 @@ appsettings.Development.json
 
 # Logs
 *.log
+DataProtectionTool.OneApp/wwwroot/index.html

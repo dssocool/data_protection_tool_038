@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getAgentPath as getAgentPathUtil, agentFetch, agentPost } from "./api";
+import { agentFetch, agentPost } from "./api";
 import MenuBar from "./components/MenuBar";
 import SqlServerConnectionModal from "./components/SqlServerConnectionModal";
 import type { SqlServerConnectionData, ValidateResult } from "./components/SqlServerConnectionModal";
