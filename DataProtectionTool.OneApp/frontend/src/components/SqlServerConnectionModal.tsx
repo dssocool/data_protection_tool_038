@@ -26,7 +26,7 @@ export interface SqlServerConnectionData {
 
 const AUTH_OPTIONS = ["SQL Server Authentication", "Microsoft Entra Integrated"];
 
-const ENCRYPT_OPTIONS = ["Mandatory"];
+const ENCRYPT_OPTIONS = ["Mandatory", "Optional"];
 
 export default function SqlServerConnectionModal({
   onClose,
