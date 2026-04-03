@@ -24,7 +24,7 @@ export interface SqlServerConnectionData {
   trustServerCertificate: boolean;
 }
 
-const AUTH_OPTIONS = ["Microsoft Entra Integrated"];
+const AUTH_OPTIONS = ["SQL Server Authentication", "Microsoft Entra Integrated"];
 
 const ENCRYPT_OPTIONS = ["Mandatory"];
 

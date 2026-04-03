@@ -56,7 +56,7 @@ public class SqlOperationService
     private async Task<ValidateSqlResult> ValidateSqlCoreAsync(ConnectionDetails details)
     {
         if (string.IsNullOrEmpty(details.Encrypt)) details.Encrypt = "Mandatory";
-        if (string.IsNullOrEmpty(details.Authentication)) details.Authentication = "Microsoft Entra Integrated";
+        if (string.IsNullOrEmpty(details.Authentication)) details.Authentication = "SQL Server Authentication";
 
         _logger.LogInformation("Testing SQL connection to {Server}...", details.ServerName);
 
@@ -310,6 +310,12 @@ public class SqlOperationService
         if (details.Authentication == "Microsoft Entra Integrated")
         {
             csb.Authentication = SqlAuthenticationMethod.ActiveDirectoryIntegrated;
+        }
+        else if (details.Authentication == "SQL Server Authentication")
+        {
+            csb.Authentication = SqlAuthenticationMethod.SqlPassword;
+            csb.UserID = details.UserName;
+            csb.Password = details.Password;
         }
         else
         {
